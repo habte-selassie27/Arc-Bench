@@ -1,0 +1,110 @@
+name: Arc Evaluation
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Evaluate with Arc Task Verifier
+        id: evaluate
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"input\": \"${{ github.event.repository.html_url }}\"}" \
+            "https://arc-task-verifier.vercel.app/api/evaluate")
+          echo "RESULT<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESPONSE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post PR Comment
+        if: success()
+        continue-on-error: true
+        uses: actions/github-script@v7
+        env:
+          EVALUATION_RESULT: ${{ steps.evaluate.outputs.RESULT }}
+        with:
+          script: |
+            const result = JSON.parse(process.env.EVALUATION_RESULT);
+
+            if (!result.scores) {
+              console.log("No scores returned — skipping comment");
+              return;
+            }
+
+            const { totalScore, baseSignalScore, arcBonusScore, badge, category } = result.scores;
+            const badgeUrl = `https://arc-task-verifier.vercel.app/api/badge?score=${totalScore}`;
+            const signalChecks = result.evaluation?.core_checks || {};
+            const arcChecks = result.evaluation?.arc_checks || {};
+            const missingItems = result.evaluation?.missing_items || [];
+            const upgradePath = result.evaluation?.upgrade_path || [];
+
+            const checkList = (obj) =>
+              Object.entries(obj)
+                .map(([k, v]) => `- ${v ? '✅' : '❌'} ${k.replace(/_/g, ' ')}`)
+                .join('\n');
+
+            const body = [
+              `## 🤖 Arc Evaluation Report`,
+              ``,
+              `| Metric | Score |`,
+              `|--------|-------|`,
+              `| **Total Score** | **${totalScore}/100** |`,
+              `| Signal Score | ${baseSignalScore}/100 |`,
+              `| Arc Readiness | ${arcBonusScore}/100 |`,
+              `| Badge | ${badge} |`,
+              `| Category | ${category} |`,
+              ``,
+              `[![Arc Readiness](${badgeUrl})](https://arc-task-verifier.vercel.app)`,
+              ``,
+              `### 📊 Signal Checks`,
+              checkList(signalChecks),
+              ``,
+              `### 🌐 Arc Ecosystem Checks`,
+              checkList(arcChecks),
+              ``,
+              missingItems.length > 0
+                ? `### ⚠️ Missing Items\n${missingItems.map((i) => `- ${i}`).join('\n')}\n`
+                : '',
+              upgradePath.length > 0
+                ? `### 🚀 Suggested Upgrade Path\n${upgradePath.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n`
+                : '',
+              `---`,
+              `*Evaluated by [Arc Task Verifier Bot](https://arc-task-verifier.vercel.app)*`,
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(
+              (c) =>
+                c.user.type === 'Bot' &&
+                c.body?.includes('Arc Evaluation Report')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

@@ -9,6 +9,7 @@ export interface HistoryEntry {
     badge: string;
   };
   timestamp: string;
+  walletAddress?: string;
 }
 
 export function getHistory(): HistoryEntry[] {

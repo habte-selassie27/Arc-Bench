@@ -25,6 +25,7 @@ export interface EvaluationResult {
   missing_items: string[];
   feedback: string;
   upgrade_path: string[];
+  walletAddress?: string;
 }
 
 // In-memory cache for evaluations

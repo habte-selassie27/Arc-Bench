@@ -1,8 +1,5 @@
 {
   "framework": "nextjs",
   "buildCommand": "next build",
-  "outputDirectory": ".next",
-  "env": {
-    "GITHUB_TOKEN": "@github_token"
-  }
+  "outputDirectory": ".next"
 }

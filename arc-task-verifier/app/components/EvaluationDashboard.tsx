@@ -5,6 +5,12 @@ import { getHistory, saveToHistory, deleteFromHistory, clearHistory, HistoryEntr
 import { generateShareUrl, parseShareUrl, copyToClipboard, ShareableData } from '../lib/share';
 import { generateArcTemplate } from '../lib/template';
 import { generateMarkdownReport, downloadMarkdown, EvaluationResult, Scores } from '../lib/export';
+import { getSavedAddress, shortenAddress } from '../lib/wallet';
+import ContractAnalyzer from './ContractAnalyzer';
+import GasEstimator from './GasEstimator';
+import CompareMode from './CompareMode';
+import TokenScanner from './TokenScanner';
+import DeployButton from './DeployButton';
 
 interface DashboardResult {
   evaluation: EvaluationResult;
@@ -34,6 +40,27 @@ export default function EvaluationDashboard() {
   const [badgeText, setBadgeText] = useState('');
   const [templateLoading, setTemplateLoading] = useState(false);
   const [batchMode, setBatchMode] = useState(false);
+  const [contractAddress, setContractAddress] = useState('');
+  const [contractResult, setContractResult] = useState<Record<string, unknown> | null>(null);
+  const [contractLoading, setContractLoading] = useState(false);
+  const [contractPanelOpen, setContractPanelOpen] = useState(false);
+  const [analyzerPanelOpen, setAnalyzerPanelOpen] = useState(false);
+  const [gasPanelOpen, setGasPanelOpen] = useState(false);
+  const [gasReportSection, setGasReportSection] = useState<string | null>(null);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [leaderboardOptIn, setLeaderboardOptIn] = useState(false);
+  const [leaderboardSubmitted, setLeaderboardSubmitted] = useState(false);
+  const [leaderboardSubmitting, setLeaderboardSubmitting] = useState(false);
+  const [leaderboardError, setLeaderboardError] = useState<string | null>(null);
+  const [streaming, setStreaming] = useState(false);
+  const [streamLog, setStreamLog] = useState<string[]>([]);
+  const [submittedRepos, setSubmittedRepos] = useState<Set<string>>(() => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const stored = localStorage.getItem('arc-leaderboard-submitted');
+      return new Set(stored ? JSON.parse(stored) : []);
+    } catch { return new Set(); }
+  });
 
   useEffect(() => {
     const saved = localStorage.getItem('arc-dark-mode');
@@ -42,6 +69,21 @@ export default function EvaluationDashboard() {
       document.documentElement.classList.add('dark');
     }
     setHistory(getHistory());
+    setWalletAddress(getSavedAddress());
+
+    const handleWalletChanged = () => {
+      setWalletAddress(getSavedAddress());
+    };
+    const handleRepoSelected = (e: Event) => {
+      const url = (e as CustomEvent).detail as string;
+      if (url) setInput(url);
+    };
+    window.addEventListener('wallet-changed', handleWalletChanged);
+    window.addEventListener('github-repo-selected', handleRepoSelected);
+    return () => {
+      window.removeEventListener('wallet-changed', handleWalletChanged);
+      window.removeEventListener('github-repo-selected', handleRepoSelected);
+    };
   }, []);
 
   useEffect(() => {
@@ -81,6 +123,8 @@ export default function EvaluationDashboard() {
     setResult(null);
     setBatchResults(null);
     setShareUrl(null);
+    setLeaderboardOptIn(false);
+    setLeaderboardSubmitted(false);
 
     const lines = input.split('\n').map(l => l.trim()).filter(Boolean);
 
@@ -102,7 +146,7 @@ export default function EvaluationDashboard() {
 
         data.evaluations.forEach((item: BatchItem) => {
           if (item.scores) {
-            saveToHistory({ input: item.input, scores: item.scores });
+            saveToHistory({ input: item.input, scores: item.scores, walletAddress: walletAddress ?? undefined });
           }
         });
         setHistory(getHistory());
@@ -115,6 +159,50 @@ export default function EvaluationDashboard() {
     }
 
     try {
+      if (streaming && lines.length === 1 && !input.includes('\n')) {
+        setStreamLog([]);
+        const res = await fetch('/api/evaluate/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: lines[0] }),
+        });
+        if (!res.ok) {
+          throw new Error('Stream evaluation failed');
+        }
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('No response body');
+        const decoder = new TextDecoder();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const chunk = decoder.decode(value);
+          for (const line of chunk.split('\n')) {
+            if (line.startsWith('event: ')) continue;
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.step) {
+                  setStreamLog(prev => [...prev, `[${data.step}] ${data.message}`]);
+                } else if (data.evaluation) {
+                  setResult(data);
+                  const entry = saveToHistory({
+                    input,
+                    scores: data.scores,
+                    walletAddress: walletAddress ?? undefined,
+                  });
+                  setHistory((prev) => [entry, ...prev]);
+                } else if (data.error) {
+                  setError(data.error);
+                }
+              } catch {}
+            }
+          }
+        }
+        setLoading(false);
+        setStreamLog(prev => [...prev, '[complete] Done']);
+        return;
+      }
+
       const response = await fetch('/api/evaluate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -132,6 +220,7 @@ export default function EvaluationDashboard() {
       const entry = saveToHistory({
         input,
         scores: data.scores,
+        walletAddress: walletAddress ?? undefined,
       });
       setHistory((prev) => [entry, ...prev]);
     } catch (err) {
@@ -157,9 +246,37 @@ export default function EvaluationDashboard() {
 
   const handleExport = () => {
     if (!result) return;
-    const markdown = generateMarkdownReport(input, result.evaluation, result.scores);
+    let markdown = generateMarkdownReport(input, result.evaluation, result.scores);
+    if (gasReportSection) {
+      markdown += '\n\n' + gasReportSection;
+    }
     const filename = `arc-evaluation-${Date.now()}.md`;
     downloadMarkdown(filename, markdown);
+  };
+
+  const handleExportCsv = () => {
+    if (!result) return;
+    import('../lib/report-export').then(({ generateCsvReport, downloadCsv }) => {
+      const evals = [{ input, scores: result.scores }];
+      const csv = generateCsvReport(evals);
+      downloadCsv(csv, `arc-evaluation-${Date.now()}.csv`);
+    });
+  };
+
+  const handleExportPdf = () => {
+    if (!result) return;
+    import('../lib/report-export').then(({ generatePdfHtml }) => {
+      const html = generatePdfHtml([{ input, scores: result.scores, feedback: result.evaluation.feedback }]);
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `arc-evaluation-${Date.now()}.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
   };
 
   const handleCopyBadge = () => {
@@ -201,6 +318,29 @@ export default function EvaluationDashboard() {
     }
   };
 
+  const handleVerifyContract = async () => {
+    const addr = contractAddress.trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+      setContractResult({ error: 'Invalid address. Must be 42 hex chars starting with 0x' });
+      return;
+    }
+    setContractLoading(true);
+    setContractResult(null);
+    try {
+      const response = await fetch('/api/verify-contract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: addr }),
+      });
+      const data = await response.json();
+      setContractResult(data);
+    } catch {
+      setContractResult({ exists: false, error: 'Verification request failed' });
+    } finally {
+      setContractLoading(false);
+    }
+  };
+
   const handleDeleteHistory = (id: string) => {
     deleteFromHistory(id);
     setHistory((prev) => prev.filter((entry) => entry.id !== id));
@@ -209,6 +349,85 @@ export default function EvaluationDashboard() {
   const handleClearHistory = () => {
     clearHistory();
     setHistory([]);
+  };
+
+  const isGitHubUrl = (url: string) => /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(url.trim());
+
+  const handleLeaderboardSubmit = async () => {
+    if (!result || !isGitHubUrl(input)) return;
+    setLeaderboardSubmitting(true);
+    setLeaderboardError(null);
+    try {
+      const res = await fetch('/api/leaderboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoUrl: input.trim(),
+          arcScore: result.scores.arcBonusScore,
+          signalScore: result.scores.baseSignalScore,
+          total: result.scores.totalScore,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        setLeaderboardError(err.error || `HTTP ${res.status}`);
+        return;
+      }
+      setLeaderboardSubmitted(true);
+      const updated = new Set(submittedRepos);
+      updated.add(input.trim());
+      setSubmittedRepos(updated);
+      localStorage.setItem('arc-leaderboard-submitted', JSON.stringify([...updated]));
+    } catch {
+      setLeaderboardError('Network error — could not reach server');
+    } finally {
+      setLeaderboardSubmitting(false);
+    }
+  };
+
+  const handleHistorySubmit = async (entry: HistoryEntry) => {
+    const url = entry.input.trim();
+    if (!isGitHubUrl(url) || submittedRepos.has(url)) return;
+    try {
+      await fetch('/api/leaderboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoUrl: url,
+          arcScore: entry.scores.arcBonusScore,
+          signalScore: entry.scores.baseSignalScore,
+          total: entry.scores.totalScore,
+        }),
+      });
+      const updated = new Set(submittedRepos);
+      updated.add(url);
+      setSubmittedRepos(updated);
+      localStorage.setItem('arc-leaderboard-submitted', JSON.stringify([...updated]));
+    } catch {
+      // silent
+    }
+  };
+
+  const handleSubmitAllHistory = async () => {
+    const unsubmitted = history.filter(e => isGitHubUrl(e.input) && !submittedRepos.has(e.input.trim()));
+    const updated = new Set(submittedRepos);
+    for (const entry of unsubmitted) {
+      try {
+        const res = await fetch('/api/leaderboard', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repoUrl: entry.input.trim(),
+            arcScore: entry.scores.arcBonusScore,
+            signalScore: entry.scores.baseSignalScore,
+            total: entry.scores.totalScore,
+          }),
+        });
+        if (res.ok) updated.add(entry.input.trim());
+      } catch {}
+    }
+    setSubmittedRepos(updated);
+    localStorage.setItem('arc-leaderboard-submitted', JSON.stringify([...updated]));
   };
 
   const formatDate = (iso: string) => {
@@ -252,6 +471,12 @@ export default function EvaluationDashboard() {
             required
           />
           <div className="flex gap-3 mt-4">
+            <div className="flex items-center gap-2 mr-auto">
+              <label className="text-xs text-gray-500 dark:text-gray-400">
+                <input type="checkbox" checked={streaming} onChange={(e) => setStreaming(e.target.checked)} className="mr-1" />
+                Live stream
+              </label>
+            </div>
             <button
               type="submit"
               disabled={loading}
@@ -269,6 +494,12 @@ export default function EvaluationDashboard() {
           </div>
         </form>
 
+        {streamLog.length > 0 && (
+          <div className="bg-gray-900 text-green-400 rounded p-4 mb-8 text-xs font-mono max-h-32 overflow-y-auto">
+            {streamLog.map((msg, i) => <div key={i}>{msg}</div>)}
+          </div>
+        )}
+
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md mb-8">
           <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Quick Actions</h2>
           <div className="grid grid-cols-2 gap-3">
@@ -276,12 +507,130 @@ export default function EvaluationDashboard() {
               {templateLoading ? 'Generating...' : '📦 Download Arc Template'}
             </button>
             <button onClick={handleExport} disabled={!result} className="p-3 bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-orange-800 rounded-md hover:bg-orange-100 dark:hover:bg-orange-900/50 text-orange-700 dark:text-orange-300 text-sm font-medium disabled:opacity-50">
-              📄 Export Report
+              📄 Export Markdown
+            </button>
+            <button onClick={handleExportCsv} disabled={!result} className="p-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-md hover:bg-green-100 dark:hover:bg-green-900/50 text-green-700 dark:text-green-300 text-sm font-medium disabled:opacity-50">
+              📊 Export CSV
+            </button>
+            <button onClick={handleExportPdf} disabled={!result} className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md hover:bg-red-100 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 text-sm font-medium disabled:opacity-50">
+              📋 Export HTML
             </button>
             <button onClick={handleClearServerCache} className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md hover:bg-red-100 dark:hover:bg-red-900/50 text-red-700 dark:text-red-300 text-sm font-medium">
               🗑️ Clear Cache
             </button>
+            <a href="/leaderboard" className="p-3 bg-yellow-50 dark:bg-yellow-900/30 border border-yellow-200 dark:border-yellow-800 rounded-md hover:bg-yellow-100 dark:hover:bg-yellow-900/50 text-yellow-700 dark:text-yellow-300 text-sm font-medium text-center">
+              🏆 Leaderboard
+            </a>
           </div>
+        </div>
+
+        {/* Contract Verifier */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md mb-8">
+          <button
+            type="button"
+            onClick={() => setContractPanelOpen(!contractPanelOpen)}
+            className="w-full p-4 flex items-center justify-between text-left"
+          >
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">🔍 Contract Verifier</h2>
+            <span className={`transform transition-transform ${contractPanelOpen ? 'rotate-180' : ''}`}>
+              ▼
+            </span>
+          </button>
+          {contractPanelOpen && (
+            <div className="px-4 pb-4 space-y-3">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Check if a contract is deployed and verified on Arc Testnet.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  value={contractAddress}
+                  onChange={(e) => setContractAddress(e.target.value)}
+                  placeholder="0x..."
+                  className="flex-1 p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-white rounded-md font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  type="button"
+                  onClick={handleVerifyContract}
+                  disabled={contractLoading}
+                  className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {contractLoading ? 'Checking...' : 'Verify on Arc'}
+                </button>
+              </div>
+              {contractResult && (
+                <div className={`p-3 rounded-md text-sm ${
+                  contractResult.isVerified
+                    ? 'bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                    : contractResult.hasCode
+                      ? 'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300'
+                      : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+                }`}>
+                  {contractResult.isVerified ? (
+                    <div>
+                      <p className="font-medium mb-1">✅ Verified on Arc Testnet</p>
+                      {(contractResult.contractName as string | null) && (
+                        <p className="text-xs mb-1">Contract: <span className="font-mono">{contractResult.contractName as string}</span></p>
+                      )}
+                      {(contractResult.abi as object | null) && Array.isArray(contractResult.abi) && (
+                        <p className="text-xs">ABI: {contractResult.abi.length} functions/events</p>
+                      )}
+                    </div>
+                  ) : contractResult.hasCode ? (
+                    <div>
+                      <p className="font-medium mb-1">⚠️ Contract Exists but Not Verified</p>
+                      <p className="text-xs">Deployed code found at this address, but source code has not been verified on ArcScan.</p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="font-medium mb-1">❌ No Contract Found</p>
+                      <p className="text-xs">{(contractResult.error as string | undefined) || 'No contract deployed at this address.'}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                <TokenScanner />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Solidity Analyzer */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md mb-8">
+          <button
+            type="button"
+            onClick={() => setAnalyzerPanelOpen(!analyzerPanelOpen)}
+            className="w-full p-4 flex items-center justify-between text-left"
+          >
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">🔬 Solidity Analyzer</h2>
+            <span className={`transform transition-transform ${analyzerPanelOpen ? 'rotate-180' : ''}`}>
+              ▼
+            </span>
+          </button>
+          {analyzerPanelOpen && (
+            <div className="px-4 pb-4">
+              <ContractAnalyzer />
+            </div>
+          )}
+        </div>
+
+        {/* Gas Estimator */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-md mb-8">
+          <button
+            type="button"
+            onClick={() => setGasPanelOpen(!gasPanelOpen)}
+            className="w-full p-4 flex items-center justify-between text-left"
+          >
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">⛽ Gas Cost Estimator</h2>
+            <span className={`transform transition-transform ${gasPanelOpen ? 'rotate-180' : ''}`}>
+              ▼
+            </span>
+          </button>
+          {gasPanelOpen && (
+            <div className="px-4 pb-4">
+              <GasEstimator onAddToReport={(section) => setGasReportSection(section)} />
+            </div>
+          )}
         </div>
 
         {error && (
@@ -294,7 +643,16 @@ export default function EvaluationDashboard() {
           <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md mb-8">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-gray-900 dark:text-white">Evaluation History</h2>
-              <button onClick={handleClearHistory} className="text-sm text-red-600 dark:text-red-400 hover:underline">Clear All</button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleSubmitAllHistory}
+                  disabled={history.filter(e => isGitHubUrl(e.input) && !submittedRepos.has(e.input.trim())).length === 0}
+                  className="text-xs px-3 py-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded hover:bg-green-200 dark:hover:bg-green-900/50 disabled:opacity-50"
+                >
+                  Submit All to Leaderboard
+                </button>
+                <button onClick={handleClearHistory} className="text-sm text-red-600 dark:text-red-400 hover:underline">Clear All</button>
+              </div>
             </div>
             {history.length === 0 ? (
               <p className="text-gray-500 dark:text-gray-400">No evaluations yet</p>
@@ -306,9 +664,27 @@ export default function EvaluationDashboard() {
                       <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{entry.input}</p>
                       <p className="text-xs text-gray-500 dark:text-gray-400">{formatDate(entry.timestamp)}</p>
                     </div>
-                    <div className="flex items-center gap-3 ml-4">
+                    <div className="flex items-center gap-2 ml-4">
+                      {entry.walletAddress && (
+                        <span className="text-xs font-mono text-indigo-500 dark:text-indigo-400" title={entry.walletAddress}>
+                          {shortenAddress(entry.walletAddress)}
+                        </span>
+                      )}
                       <span className="text-lg font-bold text-blue-600 dark:text-blue-400">{entry.scores.totalScore}/100</span>
                       <span className="text-sm">{entry.scores.badge}</span>
+                      {isGitHubUrl(entry.input) && (
+                        submittedRepos.has(entry.input.trim()) ? (
+                          <span className="text-xs text-green-500">🏆</span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleHistorySubmit(entry)}
+                            className="text-xs px-2 py-0.5 bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 rounded hover:bg-yellow-200 dark:hover:bg-yellow-900/50"
+                          >
+                            Submit
+                          </button>
+                        )
+                      )}
                       <button onClick={() => handleDeleteHistory(entry.id)} className="text-gray-400 hover:text-red-500">✕</button>
                     </div>
                   </div>
@@ -351,7 +727,14 @@ export default function EvaluationDashboard() {
           <div className="space-y-6">
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Evaluation Results</h2>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Evaluation Results</h2>
+                  {walletAddress && (
+                    <span className="text-xs font-mono px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-md border border-indigo-200 dark:border-indigo-800">
+                      {shortenAddress(walletAddress)}
+                    </span>
+                  )}
+                </div>
                 <div className="flex items-center gap-3">
                   {result.cached && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">Cached</span>}
                   <span className="text-2xl">{result.scores.badge}</span>
@@ -384,7 +767,52 @@ export default function EvaluationDashboard() {
               </div>
 
               <p className="text-gray-700 dark:text-gray-300">{result.evaluation.feedback}</p>
+
+              {isGitHubUrl(input) && !leaderboardSubmitted && (
+                <div className="mt-4 flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-700 rounded-md">
+                  <input
+                    type="checkbox"
+                    id="leaderboard-optin"
+                    checked={leaderboardOptIn}
+                    onChange={(e) => setLeaderboardOptIn(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="leaderboard-optin" className="text-sm text-gray-700 dark:text-gray-300 flex-1 cursor-pointer">
+                    Add this result to the public leaderboard
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!leaderboardOptIn || leaderboardSubmitting}
+                    onClick={handleLeaderboardSubmit}
+                    className="px-3 py-1.5 text-xs bg-yellow-500 text-white rounded-md hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {leaderboardSubmitting ? 'Submitting...' : 'Submit'}
+                  </button>
+                </div>
+              )}
+
+              {leaderboardError && (
+                <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 text-sm rounded-md">
+                  {leaderboardError}
+                </div>
+              )}
+
+              {leaderboardSubmitted && (
+                <div className="mt-4 p-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-300 text-sm rounded-md flex items-center justify-between">
+                  <span>✅ Submitted to leaderboard!</span>
+                  <a href="/leaderboard" className="underline text-green-600 dark:text-green-400 hover:no-underline">
+                    View Leaderboard
+                  </a>
+                </div>
+              )}
             </div>
+
+            {walletAddress && input.match(/\.sol/) && (
+              <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Deploy to Arc Testnet</h3>
+                <DeployButton solSource={input} contractName="MyContract" walletAddress={walletAddress} />
+              </div>
+            )}
 
             <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-md">
               <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Arc Readiness Badge</h3>
@@ -465,6 +893,10 @@ export default function EvaluationDashboard() {
             )}
           </div>
         )}
+
+        <div className="mt-8">
+          <CompareMode />
+        </div>
       </div>
     </div>
   );
