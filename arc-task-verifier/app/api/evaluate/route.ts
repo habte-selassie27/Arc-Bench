@@ -2,9 +2,32 @@ import { NextRequest, NextResponse } from 'next/server';
 import { fetchRepoData } from '../../lib/github';
 import { evaluateProject, getCachedEvaluation, setCachedEvaluation, clearCache } from '../../lib/evaluator';
 import { calculateScores } from '../../lib/scoring';
+import { checkRateLimit, getClientIp } from '../../lib/rate-limit';
+
+const RATE_LIMIT_MAX = 30; // 30 evaluations per minute for public endpoint
 
 export async function POST(request: NextRequest) {
   try {
+    // Rate limit by IP
+    const ip = getClientIp(request);
+    const rateCheck = await checkRateLimit(`eval:${ip}`, RATE_LIMIT_MAX);
+
+    if (!rateCheck.allowed) {
+      const retryAfter = Math.ceil((rateCheck.resetAt - Date.now()) / 1000);
+      return NextResponse.json(
+        { error: `Rate limit exceeded. Max ${RATE_LIMIT_MAX} evaluations per minute. Retry after ${retryAfter}s.` },
+        {
+          status: 429,
+          headers: {
+            'Retry-After': String(retryAfter),
+            'X-RateLimit-Limit': String(RATE_LIMIT_MAX),
+            'X-RateLimit-Remaining': '0',
+            'X-RateLimit-Reset': String(rateCheck.resetAt),
+          },
+        }
+      );
+    }
+
     const body = await request.json();
     const { input } = body;
 
@@ -46,7 +69,15 @@ export async function POST(request: NextRequest) {
     setCachedEvaluation(cacheKey, evaluation);
     const scores = calculateScores(evaluation);
 
-    return NextResponse.json({ evaluation, scores, cached: false });
+    return NextResponse.json({
+      evaluation,
+      scores,
+      cached: false,
+      rateLimit: {
+        remaining: rateCheck.remaining,
+        resetAt: rateCheck.resetAt,
+      },
+    });
   } catch (error) {
     console.error('Evaluation error:', error);
     return NextResponse.json(
