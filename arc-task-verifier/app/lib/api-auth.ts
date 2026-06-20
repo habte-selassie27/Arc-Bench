@@ -1,15 +1,21 @@
+import { Redis } from '@upstash/redis';
 import { NextResponse } from 'next/server';
 import { validateApiKey } from './api-keys';
 import type { ApiKeyRecord } from './api-keys';
 
 const RATE_LIMIT_WINDOW_MS = 3_600_000; // 1 hour
 const RATE_LIMIT_MAX = 100;
+const REDIS_RL_PREFIX = 'rl:';
 
+const redisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_REST_URL;
+const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+const redis = redisUrl && redisToken ? new Redis({ url: redisUrl, token: redisToken }) : null;
+
+// In-memory fallback for rate limiting when Redis is unavailable
 interface RateBucket {
   windowStart: number;
   count: number;
 }
-
 const rateBuckets = new Map<string, RateBucket>();
 
 export interface AuthResult {
@@ -20,17 +26,31 @@ export interface AuthResult {
   resetAt?: number;
 }
 
-function getBucketKey(key: string): string {
-  const now = Date.now();
-  const windowStart = Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS;
-  return `${key}:${windowStart}`;
+function getWindowStart(): number {
+  return Math.floor(Date.now() / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS;
 }
 
-export function checkRateLimit(key: string): { allowed: boolean; remaining: number; resetAt: number } {
-  const now = Date.now();
-  const windowStart = Math.floor(now / RATE_LIMIT_WINDOW_MS) * RATE_LIMIT_WINDOW_MS;
-  const bucketKey = getBucketKey(key);
+async function redisCheckRateLimit(key: string): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+  const windowStart = getWindowStart();
   const resetAt = windowStart + RATE_LIMIT_WINDOW_MS;
+  const bucketKey = `${REDIS_RL_PREFIX}${key}:${windowStart}`;
+
+  const current = (await redis!.get(bucketKey)) as number | null;
+  const count = current ?? 0;
+
+  if (count >= RATE_LIMIT_MAX) {
+    return { allowed: false, remaining: 0, resetAt };
+  }
+
+  await redis!.set(bucketKey, count + 1, { ex: Math.ceil(RATE_LIMIT_WINDOW_MS / 1000) });
+  return { allowed: true, remaining: RATE_LIMIT_MAX - count - 1, resetAt };
+}
+
+function memCheckRateLimit(key: string): { allowed: boolean; remaining: number; resetAt: number } {
+  const now = Date.now();
+  const windowStart = getWindowStart();
+  const resetAt = windowStart + RATE_LIMIT_WINDOW_MS;
+  const bucketKey = `${key}:${windowStart}`;
 
   let bucket = rateBuckets.get(bucketKey);
   if (!bucket) {
@@ -54,6 +74,17 @@ export function checkRateLimit(key: string): { allowed: boolean; remaining: numb
 
   bucket.count++;
   return { allowed: true, remaining: RATE_LIMIT_MAX - bucket.count, resetAt };
+}
+
+export async function checkRateLimit(key: string): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+  if (redis) {
+    try {
+      return await redisCheckRateLimit(key);
+    } catch {
+      // Fall through to in-memory
+    }
+  }
+  return memCheckRateLimit(key);
 }
 
 export async function requireApiKey(request: Request): Promise<AuthResult & { response?: NextResponse }> {
@@ -81,9 +112,8 @@ export async function requireApiKey(request: Request): Promise<AuthResult & { re
     };
   }
 
-  const record = validateApiKey(key);
+  const record = await validateApiKey(key);
   if (!record) {
-    // Log only prefix
     console.log(`[api-auth] Invalid key attempt: "${key.slice(0, 8)}..."`);
     return {
       valid: false,
@@ -95,7 +125,7 @@ export async function requireApiKey(request: Request): Promise<AuthResult & { re
     };
   }
 
-  const rateCheck = checkRateLimit(key);
+  const rateCheck = await checkRateLimit(key);
   if (!rateCheck.allowed) {
     const retryAfter = Math.ceil((rateCheck.resetAt - Date.now()) / 1000);
     return {

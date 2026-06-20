@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const key = generateApiKey(label.trim());
+    const key = await generateApiKey(label.trim());
 
     // Key is returned ONCE, never again
     return NextResponse.json({
@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
 export async function GET() {
   try {
-    const metadata = getKeyMetadata();
+    const metadata = await getKeyMetadata();
     return NextResponse.json({
       keys: metadata,
     });

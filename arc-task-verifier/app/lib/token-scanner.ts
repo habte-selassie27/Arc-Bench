@@ -1,5 +1,5 @@
-import type { EvaluationResult } from './evaluator';
-import type { ScoreBreakdown } from './scoring';
+const ARC_RPC_URL = process.env.ARC_TESTNET_RPC_URL || 'https://rpc.testnet.arc.network';
+const ARCSCAN_API = process.env.ARCSCAN_API_URL || 'https://testnet.arcscan.app/api';
 
 export interface TokenInfo {
   address: string;
@@ -14,15 +14,6 @@ export interface TokenInfo {
   hasMintable: boolean;
 }
 
-const ERC20_REQUIRED = [
-  'totalSupply',
-  'balanceOf',
-  'transfer',
-  'transferFrom',
-  'approve',
-  'allowance',
-];
-
 const ERC20_SIGNATURES: Record<string, string> = {
   '0x18160ddd': 'totalSupply()',
   '0x70a08231': 'balanceOf(address)',
@@ -35,6 +26,99 @@ const ERC20_SIGNATURES: Record<string, string> = {
   '0x06fdde03': 'name()',
 };
 
+async function rpcCall(to: string, data: string): Promise<string | null> {
+  try {
+    const response = await fetch(ARC_RPC_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_call',
+        params: [{ to, data }, 'latest'],
+      }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) return null;
+    const result = await response.json();
+    return result.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeString(hex: string): string | null {
+  // ABI-encoded string: offset (32 bytes) + length (32 bytes) + data
+  // Simplified: skip first 64 hex chars (offset + length), read remaining bytes
+  if (!hex || hex === '0x') return null;
+  try {
+    // Remove 0x prefix
+    const raw = hex.slice(2);
+    if (raw.length < 128) return null; // too short for offset + length + data
+
+    // Read length from position 64 (32 bytes offset)
+    const dataLength = parseInt(raw.slice(64, 128), 16);
+    if (dataLength === 0) return null;
+
+    // Read data from position 128
+    const dataHex = raw.slice(128, 128 + dataLength * 2);
+    let str = '';
+    for (let i = 0; i < dataHex.length; i += 2) {
+      const code = parseInt(dataHex.slice(i, i + 2), 16);
+      if (code === 0) break;
+      str += String.fromCharCode(code);
+    }
+    return str || null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeUint256(hex: string): string | null {
+  if (!hex || hex === '0x') return null;
+  try {
+    const raw = hex.slice(2);
+    if (raw.length < 64) return null;
+    const value = BigInt('0x' + raw.slice(0, 64));
+    return value.toString();
+  } catch {
+    return null;
+  }
+}
+
+function decodeUint8(hex: string): number | null {
+  if (!hex || hex === '0x') return null;
+  try {
+    const raw = hex.slice(2);
+    if (raw.length < 64) return null;
+    const value = parseInt(raw.slice(62, 64), 16);
+    return isNaN(value) ? null : value;
+  } catch {
+    return null;
+  }
+}
+
+async function readTokenMetadata(address: string): Promise<{
+  name: string | null;
+  symbol: string | null;
+  decimals: number | null;
+  totalSupply: string | null;
+}> {
+  const [nameHex, symbolHex, decimalsHex, totalSupplyHex] = await Promise.all([
+    rpcCall(address, '0x06fdde03'), // name()
+    rpcCall(address, '0x95d89b41'), // symbol()
+    rpcCall(address, '0x313ce567'), // decimals()
+    rpcCall(address, '0x18160ddd'), // totalSupply()
+  ]);
+
+  return {
+    name: decodeString(nameHex ?? ''),
+    symbol: decodeString(symbolHex ?? ''),
+    decimals: decodeUint8(decimalsHex ?? ''),
+    totalSupply: decodeUint256(totalSupplyHex ?? ''),
+  };
+}
+
 export async function scanToken(address: string): Promise<TokenInfo> {
   const foundFunctions: string[] = [];
   const missingFunctions: string[] = [];
@@ -42,10 +126,10 @@ export async function scanToken(address: string): Promise<TokenInfo> {
   let hasPausable = false;
   let hasMintable = false;
 
-  // Try ArcScan API
+  // Try ArcScan API first
   try {
     const response = await fetch(
-      `https://testnet.arcscan.app/api?module=contract&action=getsourcecode&address=${address}`
+      `${ARCSCAN_API}?module=contract&action=getsourcecode&address=${address}`
     );
 
     if (response.ok) {
@@ -67,12 +151,15 @@ export async function scanToken(address: string): Promise<TokenInfo> {
         hasPausable = functions.includes('pause') || functions.includes('unpause');
         hasMintable = functions.includes('mint');
 
+        // Read actual token metadata via RPC
+        const metadata = await readTokenMetadata(address);
+
         return {
           address,
-          name: functions.includes('name') ? 'Found in ABI' : null,
-          symbol: functions.includes('symbol') ? 'Found in ABI' : null,
-          decimals: null,
-          totalSupply: null,
+          name: metadata.name,
+          symbol: metadata.symbol,
+          decimals: metadata.decimals,
+          totalSupply: metadata.totalSupply,
           isERC20: foundFunctions.length >= 4,
           missingFunctions,
           hasOwnable,
@@ -88,39 +175,37 @@ export async function scanToken(address: string): Promise<TokenInfo> {
   // Fall back to checking via RPC signatures
   try {
     for (const [sig, name] of Object.entries(ERC20_SIGNATURES)) {
-      const rpcResponse = await fetch('https://rpc.testnet.arc.network', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'eth_call',
-          params: [{
-            to: address,
-            data: sig,
-          }, 'latest'],
-        }),
-      });
-
-      if (rpcResponse.ok) {
-        const result = await rpcResponse.json();
-        if (result.result && result.result !== '0x') {
-          foundFunctions.push(name.split('(')[0]);
-        } else {
-          missingFunctions.push(name.split('(')[0]);
-        }
+      const result = await rpcCall(address, sig);
+      if (result && result !== '0x') {
+        foundFunctions.push(name.split('(')[0]);
+      } else {
+        missingFunctions.push(name.split('(')[0]);
       }
     }
   } catch {
     // RPC failed
   }
 
+  // If we found enough functions, try to read metadata
+  let name: string | null = null;
+  let symbol: string | null = null;
+  let decimals: number | null = null;
+  let totalSupply: string | null = null;
+
+  if (foundFunctions.length >= 4) {
+    const metadata = await readTokenMetadata(address);
+    name = metadata.name;
+    symbol = metadata.symbol;
+    decimals = metadata.decimals;
+    totalSupply = metadata.totalSupply;
+  }
+
   return {
     address,
-    name: null,
-    symbol: null,
-    decimals: null,
-    totalSupply: null,
+    name,
+    symbol,
+    decimals,
+    totalSupply,
     isERC20: foundFunctions.length >= 4,
     missingFunctions,
     hasOwnable,
