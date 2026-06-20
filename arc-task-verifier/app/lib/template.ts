@@ -1,10 +1,11 @@
 import JSZip from 'jszip';
+import { ARC_RPC_URL, ARCSCAN_BASE_URL, ARCSCAN_API_URL } from './config';
 
 export async function generateArcTemplate(): Promise<Blob> {
   const zip = new JSZip();
 
   // .env file
-  zip.file('.env', `ARC_TESTNET_RPC_URL="https://rpc.testnet.arc.network"
+  zip.file('.env', `ARC_TESTNET_RPC_URL="${ARC_RPC_URL}"
 PRIVATE_KEY="0x..."
 HELLOARCHITECT_ADDRESS="0x..."
 `);
@@ -19,10 +20,10 @@ remappings = [
 ]
 
 [rpc_endpoints]
-arc-testnet = "https://rpc.testnet.arc.network"
+arc-testnet = "${ARC_RPC_URL}"
 
 [etherscan]
-arc-testnet = { key = "", url = "https://testnet.arcscan.app/api" }
+arc-testnet = { key = "", url = "${ARCSCAN_API_URL}" }
 `);
 
   // .gitignore
@@ -149,9 +150,9 @@ cast send $HELLOARCHITECT_ADDRESS "setGreeting(string)" "Hello Arc!" --rpc-url $
 
 ## Arc Network Details
 
-- **RPC**: https://rpc.testnet.arc.network
+- **RPC**: ${ARC_RPC_URL}
 - **Chain ID**: 5042002
-- **Explorer**: https://testnet.arcscan.app
+- **Explorer**: ${ARCSCAN_BASE_URL}
 - **Gas Token**: USDC (18 decimals)
 `);
 

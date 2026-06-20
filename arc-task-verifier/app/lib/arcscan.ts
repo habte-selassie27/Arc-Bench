@@ -1,4 +1,4 @@
-const ARC_RPC_URL = 'https://rpc.testnet.arc.network';
+import { ARC_RPC_URL, ARCSCAN_API_URL } from './config';
 
 export interface ContractInfo {
   exists: boolean;
@@ -102,8 +102,7 @@ export async function fetchContractInfo(address: string): Promise<ContractInfo> 
     return result;
   }
 
-  const baseUrl = 'https://testnet.arcscan.app/api';
-  const url = `${baseUrl}?module=contract&action=getsourcecode&address=${normalized}`;
+  const url = `${ARCSCAN_API_URL}?module=contract&action=getsourcecode&address=${normalized}`;
 
   const fetchWithRetry = async (attempts: number): Promise<ContractInfo> => {
     try {

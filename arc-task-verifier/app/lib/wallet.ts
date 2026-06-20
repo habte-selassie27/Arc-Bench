@@ -79,7 +79,6 @@ export async function getChainId(): Promise<number | null> {
   }
 }
 
-// TODO: Replace with real Arc Testnet chain ID (5042002 = 0x4CE992)
 export const ARC_CHAIN_ID = 5042002;
 export const ARC_CHAIN_ID_HEX = '0x4CE992';
 

@@ -1,11 +1,12 @@
-import type { EvaluationResult } from './evaluator';
-import type { ScoreBreakdown } from './scoring';
+import type { EvaluationResult } from './types';
+import type { ScoreBreakdown } from './types';
+import { APP_DEPLOY_URL } from './config';
 
 export function formatEvaluationComment(
   result: EvaluationResult,
   scores: ScoreBreakdown
 ): string {
-  const badgeUrl = `https://arc-task-verifier.vercel.app/api/badge?score=${scores.totalScore}`;
+  const badgeUrl = `${APP_DEPLOY_URL}/api/badge?score=${scores.totalScore}`;
 
   const checkList = (obj: Record<string, boolean>) =>
     Object.entries(obj)
@@ -37,7 +38,7 @@ export function formatEvaluationComment(
     `| Badge | ${scores.badge} |`,
     `| Category | ${scores.category} |`,
     ``,
-    `[![Arc Readiness](${badgeUrl})](https://arc-task-verifier.vercel.app)`,
+    `[![Arc Readiness](${badgeUrl})](${APP_DEPLOY_URL})`,
     ``,
     `### 📊 Signal Checks`,
     checkList(result.core_checks),
@@ -48,7 +49,7 @@ export function formatEvaluationComment(
     missingSection,
     upgradeSection,
     `---`,
-    `*Evaluated by [Arc Task Verifier Bot](https://arc-task-verifier.vercel.app)*`,
+    `*Evaluated by [Arc Task Verifier Bot](${APP_DEPLOY_URL})*`,
     ``,
     `> Trigger a re-evaluation by pushing new commits to this PR.`,
   ].join('\n');
@@ -63,7 +64,7 @@ export async function setCommitStatus(
   totalScore?: number
 ): Promise<void> {
   const [owner, repo] = repoFullName.split('/');
-  const targetUrl = totalScore ? `https://arc-task-verifier.vercel.app/api/badge?score=${totalScore}` : undefined;
+  const targetUrl = totalScore ? `${APP_DEPLOY_URL}/api/badge?score=${totalScore}` : undefined;
 
   const response = await fetch(
     `https://api.github.com/repos/${owner}/${repo}/statuses/${sha}`,

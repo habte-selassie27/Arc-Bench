@@ -1,32 +1,6 @@
-export interface EvaluationResult {
-  signal_score: number;
-  arc_readiness_score: number;
-  category: string;
-  core_checks: {
-    reproducible: boolean;
-    has_setup_steps: boolean;
-    has_demo: boolean;
-    has_dependencies: boolean;
-  };
-  arc_checks: {
-    uses_arc_rpc: boolean;
-    mentions_foundry: boolean;
-    smart_contract_ready: boolean;
-    uses_usdc_gas_awareness: boolean;
-    appkit_usage_possible: boolean;
-  };
-  appkit_details: {
-    has_send: boolean;
-    has_bridge: boolean;
-    has_swap: boolean;
-    has_unified_balance: boolean;
-    has_appkit_import: boolean;
-  };
-  missing_items: string[];
-  feedback: string;
-  upgrade_path: string[];
-  walletAddress?: string;
-}
+import type { EvaluationResult } from './types';
+
+export type { EvaluationResult };
 
 // In-memory cache for evaluations
 const evaluationCache = new Map<string, EvaluationResult>();
@@ -99,7 +73,7 @@ export async function evaluateProject(content: string): Promise<EvaluationResult
   if (!hasSetupSteps) missingItems.push('Add installation and setup instructions');
   if (!hasDemo) missingItems.push('Include a working demo or deployment link');
   if (!hasDependencies) missingItems.push('Add dependency file (package.json, requirements.txt, etc.)');
-  if (!usesArcRpc) missingItems.push('Add Arc Testnet RPC configuration (https://rpc.testnet.arc.network)');
+  if (!usesArcRpc) missingItems.push('Add Arc Testnet RPC configuration');
   if (!mentionsFoundry) missingItems.push('Include Foundry deployment script for Arc Testnet');
   if (!smartContractReady) missingItems.push('Add smart contract structure if applicable');
   if (!usesUsdcGasAwareness) missingItems.push('Clarify USDC gas token usage for Arc');

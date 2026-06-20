@@ -1,18 +1,19 @@
 'use client';
 
 import { useState } from 'react';
+import { APP_DEPLOY_URL } from '../lib/config';
 
-const curlEvaluate = `curl -X POST https://arc-task-verifier.vercel.app/api/v1/evaluate \\
+const curlEvaluate = `curl -X POST ${APP_DEPLOY_URL}/api/v1/evaluate \\
   -H "Authorization: Bearer arc_demo_key" \\
   -H "Content-Type: application/json" \\
   -d '{"input": "https://github.com/owner/repo"}'`;
 
-const curlBatch = `curl -X POST https://arc-task-verifier.vercel.app/api/v1/batch \\
+const curlBatch = `curl -X POST ${APP_DEPLOY_URL}/api/v1/batch \\
   -H "Authorization: Bearer arc_demo_key" \\
   -H "Content-Type: application/json" \\
   -d '{"inputs": ["https://github.com/owner/repo1", "https://github.com/owner/repo2"]}'`;
 
-const jsFetch = `const response = await fetch('https://arc-task-verifier.vercel.app/api/v1/evaluate', {
+const jsFetch = `const response = await fetch('${APP_DEPLOY_URL}/api/v1/evaluate', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer arc_demo_key',
@@ -25,7 +26,7 @@ const data = await response.json();`;
 const pythonCode = `import requests
 
 response = requests.post(
-    'https://arc-task-verifier.vercel.app/api/v1/evaluate',
+    '${APP_DEPLOY_URL}/api/v1/evaluate',
     headers={
         'Authorization': 'Bearer arc_demo_key',
         'Content-Type': 'application/json',

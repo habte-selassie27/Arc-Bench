@@ -1,4 +1,5 @@
 import { Redis } from '@upstash/redis';
+import { ARC_RPC_URL, ARC_CHAIN_ID, ARCSCAN_BASE_URL } from './config';
 
 const redisUrl = process.env.REDIS_URL || process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -21,11 +22,8 @@ export interface DeployStatus {
   timestamp: number;
 }
 
-const ARC_TESTNET_RPC = process.env.ARC_TESTNET_RPC_URL || 'https://rpc.testnet.arc.network';
-const ARC_CHAIN_ID = parseInt(process.env.ARC_CHAIN_ID || '5042002', 10);
-
 async function rpcCall(method: string, params: unknown[]): Promise<unknown> {
-  const response = await fetch(ARC_TESTNET_RPC, {
+  const response = await fetch(ARC_RPC_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
@@ -96,10 +94,10 @@ out = "out"
 lib_path = "lib"
 
 [rpc_endpoints]
-arc_testnet = "${ARC_TESTNET_RPC}"
+arc_testnet = "${ARC_RPC_URL}"
 
 [etherscan]
-arc_testnet = { url = "https://testnet.arcscan.app" }
+arc_testnet = { url = "${ARCSCAN_BASE_URL}" }
 
 [chain]
 arc_testnet = ${ARC_CHAIN_ID}

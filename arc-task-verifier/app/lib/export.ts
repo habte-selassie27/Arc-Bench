@@ -1,39 +1,6 @@
-export interface EvaluationResult {
-  signal_score: number;
-  arc_readiness_score: number;
-  category: string;
-  core_checks: {
-    reproducible: boolean;
-    has_setup_steps: boolean;
-    has_demo: boolean;
-    has_dependencies: boolean;
-  };
-  arc_checks: {
-    uses_arc_rpc: boolean;
-    mentions_foundry: boolean;
-    smart_contract_ready: boolean;
-    uses_usdc_gas_awareness: boolean;
-    appkit_usage_possible: boolean;
-  };
-  appkit_details?: {
-    has_send: boolean;
-    has_bridge: boolean;
-    has_swap: boolean;
-    has_unified_balance: boolean;
-    has_appkit_import: boolean;
-  };
-  missing_items: string[];
-  feedback: string;
-  upgrade_path: string[];
-}
+import type { EvaluationResult, Scores } from './types';
 
-export interface Scores {
-  baseSignalScore: number;
-  arcBonusScore: number;
-  totalScore: number;
-  category: string;
-  badge: string;
-}
+export type { EvaluationResult, Scores };
 
 export function generateMarkdownReport(input: string, evaluation: EvaluationResult, scores: Scores): string {
   const date = new Date().toLocaleDateString();

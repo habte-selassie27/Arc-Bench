@@ -1,5 +1,4 @@
-const ARC_RPC_URL = process.env.ARC_TESTNET_RPC_URL || 'https://rpc.testnet.arc.network';
-const ARCSCAN_API = process.env.ARCSCAN_API_URL || 'https://testnet.arcscan.app/api';
+import { ARC_RPC_URL, ARCSCAN_API_URL } from './config';
 
 export interface TokenInfo {
   address: string;
@@ -129,7 +128,7 @@ export async function scanToken(address: string): Promise<TokenInfo> {
   // Try ArcScan API first
   try {
     const response = await fetch(
-      `${ARCSCAN_API}?module=contract&action=getsourcecode&address=${address}`
+      `${ARCSCAN_API_URL}?module=contract&action=getsourcecode&address=${address}`
     );
 
     if (response.ok) {

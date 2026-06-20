@@ -1,19 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import type { DeployStatus } from '../lib/types';
 
 interface Props {
   solSource: string;
   contractName: string;
   walletAddress: string | null;
-}
-
-interface DeployStatus {
-  id: string;
-  status: 'pending' | 'compiling' | 'deploying' | 'confirmed' | 'failed';
-  txHash?: string;
-  contractAddress?: string;
-  error?: string;
 }
 
 export default function DeployButton({ solSource, contractName, walletAddress }: Props) {
@@ -43,7 +36,7 @@ export default function DeployButton({ solSource, contractName, walletAddress }:
         }, 2000);
       }
     } catch {
-      setStatus({ id: '', status: 'failed', error: 'Deploy request failed' });
+      setStatus({ id: '', status: 'failed', error: 'Deploy request failed', timestamp: Date.now() });
     } finally {
       setDeploying(false);
     }

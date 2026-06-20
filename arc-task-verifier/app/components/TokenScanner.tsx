@@ -1,19 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-
-interface TokenInfo {
-  address: string;
-  name: string | null;
-  symbol: string | null;
-  decimals: number | null;
-  totalSupply: string | null;
-  isERC20: boolean;
-  missingFunctions: string[];
-  hasOwnable: boolean;
-  hasPausable: boolean;
-  hasMintable: boolean;
-}
+import type { TokenInfo } from '../lib/types';
 
 export default function TokenScanner() {
   const [address, setAddress] = useState('');

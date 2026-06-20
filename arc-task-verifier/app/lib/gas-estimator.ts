@@ -1,4 +1,4 @@
-const ARC_RPC_URL = process.env.ARC_TESTNET_RPC_URL || 'https://rpc.testnet.arc.network';
+import { ARC_RPC_URL } from './config';
 
 export interface GasEstimate {
   gasUnits: number;

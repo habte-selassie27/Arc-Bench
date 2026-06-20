@@ -1,12 +1,6 @@
-import { EvaluationResult } from './evaluator';
+import type { EvaluationResult, ScoreBreakdown } from './types';
 
-export interface ScoreBreakdown {
-  baseSignalScore: number;
-  arcBonusScore: number;
-  totalScore: number;
-  category: string;
-  badge: string;
-}
+export type { ScoreBreakdown };
 
 export function calculateScores(result: EvaluationResult): ScoreBreakdown {
   // Base Signal Score (0-100)
